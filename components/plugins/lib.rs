@@ -17,10 +17,13 @@
 #![deny(unused_imports)]
 #![deny(unused_variables)]
 
+// extern crate script;
 #[phase(plugin,link)]
 extern crate syntax;
 #[phase(plugin, link)]
 extern crate rustc;
+#[phase(plugin, link)]
+extern crate core;
 #[cfg(test)]
 extern crate sync;
 
@@ -42,5 +45,6 @@ pub fn plugin_registrar(reg: &mut Registry) {
     reg.register_lint_pass(box lints::TransmutePass as LintPassObject);
     reg.register_lint_pass(box lints::UnrootedPass as LintPassObject);
     reg.register_lint_pass(box lints::PrivatizePass as LintPassObject);
+    reg.register_lint_pass(box lints::BannedTypePass as LintPassObject);
 }
 

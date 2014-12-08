@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use std::vec::Vec;
 use syntax::{ast, ast_map, ast_util, codemap, visit};
 use syntax::ast::Public;
 use syntax::attr::AttrMetaMethods;
@@ -17,6 +18,8 @@ declare_lint!(UNROOTED_MUST_ROOT, Deny,
               "Warn and report usage of unrooted jsmanaged objects")
 declare_lint!(PRIVATIZE, Deny,
               "Allows to enforce private fields for struct definitions")
+declare_lint!(PREVENT_CELL_OPTION_JS, Deny,
+              "Prevents use of Cell<Option<JS<T>>> in DOM objects")
 
 /// Lint for auditing transmutes
 ///
@@ -40,6 +43,10 @@ pub struct UnrootedPass;
 ///
 /// This lint (disable with `-A privatize`/`#[allow(privatize)]`) ensures all types marked with `#[privatize]` have no private fields
 pub struct PrivatizePass;
+
+/// Lint for keeping Cell<Option<JS<T>>> from appearing in DOM objects.
+pub struct BannedTypePass;
+
 
 impl LintPass for TransmutePass {
     fn get_lints(&self) -> LintArray {
@@ -249,6 +256,61 @@ impl LintPass for PrivatizePass {
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+fn get_path_node_ids(ty: &ast::Ty, ids: &mut Vec<ast::NodeId>) {
+    match ty.node {
+        ast::TyPath(ast::Path { segments: ref segs, .. }, _, id) => {
+            ids.push(id);
+            match segs.last() {
+                Some(sg) => match sg.parameters.types().pop() {
+                    // This is correct only for cases we want to lint single
+                    // argument type parameters.
+                    Some(typ) => {
+                        get_path_node_ids(&**typ, ids);
+                    },
+                    None => ()
+                },
+                None => ()
+            }
+        },
+        _ => ()
+    }
+}
+
+impl LintPass for BannedTypePass {
+    fn get_lints(&self) -> LintArray {
+        lint_array!(PREVENT_CELL_OPTION_JS)
+    }
+
+    #[allow(unused_imports)]
+    fn check_struct_field(&mut self, cx: &Context, fld: &ast::StructField) {
+        {
+            use core::cell::Cell;
+            use core::option::Option;
+            // use servo_script::dom::bindings::js::JS;
+        }
+        let banned_types = ["core::cell::Cell",
+                            "core::option::Option",
+                            "dom::bindings::js::JS"];
+        let mut node_ids = Vec::new();
+        get_path_node_ids(&*fld.node.ty, &mut node_ids);
+        if node_ids.len() >= banned_types.len() {
+            for (id, ty_path) in node_ids.iter().zip(banned_types.iter()) {
+                match cx.tcx.def_map.borrow().get_copy(id) {
+                    def::DefPrimTy(_) => return,
+                    d => {
+                        let s = ty::item_path_str(cx.tcx, d.def_id());
+                        if s.as_slice() != *ty_path {
+                            return;
+                        }
+                    }
+                }
+            }
+            cx.span_lint(PREVENT_CELL_OPTION_JS, fld.node.ty.span,
+                         "Cell<Option<JS<T>>> is not safe in structs, use MutNullableJS instead");
         }
     }
 }
